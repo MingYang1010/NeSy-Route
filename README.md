@@ -3,10 +3,10 @@
 This repository contains the prompt templates and evaluation code for **NeSy-Route**, a neural-symbolic benchmark for constrained route planning in remote-sensing imagery.
 
 <p align="center">
-  <a href="https://mingyang1010.github.io/NeSy-Route/"><img src="https://img.shields.io/badge/Project-Page-2ea44f?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Project Page"></a>
-  <a href="https://arxiv.org/abs/2603.16307"><img src="https://img.shields.io/badge/arXiv-2603.16307-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv Paper"></a>
-  <a href="https://github.com/MingYang1010/NeSy-Route"><img src="https://img.shields.io/badge/GitHub-Code-181717?style=for-the-badge&logo=github&logoColor=white" alt="GitHub Code"></a>
-  <a href="https://huggingface.co/datasets/Ming1010/NeSy-Route"><img src="https://img.shields.io/badge/Hugging%20Face-Dataset-FFD21E?style=for-the-badge&logo=huggingface&logoColor=000000" alt="Hugging Face Dataset"></a>
+  <a href="https://mingyang1010.github.io/NeSy-Route/"><img src="https://img.shields.io/badge/Project-Page-34A853?style=flat&logo=googlechrome&logoColor=white" alt="Project Page"></a>
+  <a href="https://arxiv.org/abs/2603.16307"><img src="https://img.shields.io/badge/arXiv-2603.16307-B31B1B?style=flat&logo=arxiv&logoColor=white" alt="arXiv Paper"></a>
+  <a href="https://github.com/MingYang1010/NeSy-Route"><img src="https://img.shields.io/badge/Code-GitHub-555555?style=flat&logo=github&logoColor=white" alt="GitHub Code"></a>
+  <a href="https://huggingface.co/datasets/Ming1010/NeSy-Route"><img src="https://img.shields.io/badge/Dataset-Hugging%20Face-FFD21E?style=flat&logo=huggingface&logoColor=000000" alt="Hugging Face Dataset"></a>
 </p>
 
 <!--
