@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+venv/
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+*_secret*
+*_token*
+
+# Local datasets, model outputs, and generated metrics.
+data/
+datasets/
+results/
+outputs/
+metrics/
+errors/
+filtered_samples/
+*.log
