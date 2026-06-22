@@ -1,11 +1,5 @@
 <div align="center">
 
-<p>
-  <a href="https://eccv.ecva.net/Conferences/2026">
-    <img src="assets/eccv-wordmark.svg" alt="ECCV" width="180">
-  </a>
-</p>
-
 <h1>NeSy-Route</h1>
 
 <p><strong>A neural-symbolic benchmark for constrained route planning in remote-sensing imagery.</strong></p>
@@ -38,7 +32,6 @@
 
 | Date | Update |
 | --- | --- |
-| 2026.06 | 🎉 **NeSy-Route has been accepted to ECCV 2026.** |
 | 2026.06 | 🚀 Evaluation code is released, and the Hugging Face dataset repository is online. |
 | 2026.06 | 🌍 Project page, paper, code, and dataset links are collected above for quick access. |
 
