@@ -28,90 +28,48 @@
 
 </div>
 
-This repository contains the prompt templates and evaluation code for **NeSy-Route**, a neural-symbolic benchmark for constrained route planning in remote-sensing imagery.
+## ✨ News
 
-<!--
-## News
+| Date | Update |
+| --- | --- |
+| 2026.06 | 🎉 **NeSy-Route has been accepted to ECCV 2026.** |
+| 2026.06 | 🚀 Evaluation code is released, and the Hugging Face dataset repository is online. |
+| 2026.06 | 🌍 Project page, paper, code, and dataset links are collected above for quick access. |
 
-- 2026-06: NeSy-Route was accepted to ECCV 2026.
--->
+## Overview
 
-## Repository Layout
+This repository provides the prompt templates and evaluation scripts for **NeSy-Route**, a benchmark for studying whether multimodal large language models can combine visual perception, symbolic constraints, and route planning over remote-sensing imagery.
 
-```text
-evaluation/
-  vector_metrics.py                 # Shared Task 1/2 vector metrics
-  task1/
-    prompts.py                      # Task 1 prompt template
-    evaluate.py                     # Traversability and cost-vector evaluation
-  task2/
-    prompts.py                      # Task 2 prompt template
-    evaluate.py                     # Traversability, cost-vector, and region-vector evaluation
-  task3/
-    prompts.py                      # Task 3 prompt template
-    trajectory_evaluator.py         # Task 3 CLI entrypoint
-    trajectory_core.py              # Task 3 trajectory metrics
-scripts/
-  install_env.sh                    # Evaluation + vLLM/OpenAI-compatible API environment setup
-requirements.txt                    # Evaluation dependencies
-requirements-inference.txt          # vLLM and OpenAI API dependencies
-```
+NeSy-Route contains three evaluation tasks:
 
-Datasets, model outputs, generated metrics, and credentials are intentionally excluded from this repository.
+- **Task 1:** few-shot semantic traversability and cost-vector prediction.
+- **Task 2:** zero-shot constraint-aware semantic and region reasoning.
+- **Task 3:** zero-shot constrained route planning with predicted waypoints or trajectories.
 
-## Installation
+## Quick Start
 
-On a Linux machine with a CUDA-compatible GPU, run:
+Install the evaluation and inference dependencies:
 
 ```bash
 bash scripts/install_env.sh
 source .venv/bin/activate
 ```
 
-The script installs the evaluation dependencies plus `vllm`, `openai`, and `qwen-vl-utils`.
-
-If you already have a managed environment, you can install manually:
+If you already have a managed Python environment, install the dependencies manually:
 
 ```bash
 pip install -r requirements.txt -r requirements-inference.txt
 ```
 
-## Dataset
-
-Download the dataset and set:
+Download the dataset from Hugging Face and set:
 
 ```bash
 export NESY_ROUTE_DATA=/path/to/NeSy-Route
 ```
 
-Expected layout:
+Task 3 also needs semantic label masks. Pass the label directory through `--labels_root`; label file names should match each sample's `image_name`.
 
-```text
-$NESY_ROUTE_DATA/
-  Task1/
-    task1_v4_filter_v2_updated.json
-  Task2/
-    Level_1.json
-    Level_2.json
-    Level_3.json
-    Level_1/
-    Level_2/
-    Level_3/
-  Task3/
-    filter_fixed_total_with_id_xy.jsonl
-    easy.jsonl
-    medium.jsonl
-    hard.jsonl
-    filter_fixed_total_with_id_xy/
-      samples/
-      cost_map_npy/
-      traverse_map_npy/
-      gt/
-```
-
-Task 3 also needs semantic label masks. Pass their directory through `--labels_root`; label file names should match each sample's `image_name`.
-
-## Running Inference
+## Prompts and Predictions
 
 Prompt templates are provided in:
 
@@ -121,7 +79,14 @@ evaluation/task2/prompts.py
 evaluation/task3/prompts.py
 ```
 
-For local inference, start an OpenAI-compatible vLLM server:
+The evaluation scripts expect prediction files to follow these naming patterns:
+
+```text
+Task 1/2: <result_dir>/<model>_<dataset>_<prompt_version>.json
+Task 3:   a JSONL model-output file passed through --model_output
+```
+
+For local inference, you can use an OpenAI-compatible vLLM server:
 
 ```bash
 vllm serve Qwen/Qwen2.5-VL-7B-Instruct \
@@ -131,23 +96,18 @@ vllm serve Qwen/Qwen2.5-VL-7B-Instruct \
   --trust-remote-code
 ```
 
-Then call it with the OpenAI Python client:
+Then configure the OpenAI client:
 
 ```bash
 export OPENAI_BASE_URL=http://127.0.0.1:8000/v1
 export OPENAI_API_KEY=EMPTY
 ```
 
-For hosted APIs, set `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and the model name according to your provider. Do not commit API keys or local credential files.
+For hosted APIs, set `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and the model name according to your provider. Do not commit API keys or credential files.
 
-The evaluation scripts expect prediction files to follow these naming patterns:
+## Evaluation
 
-```text
-Task 1/2: <result_dir>/<model>_<dataset>_<prompt_version>.json
-Task 3:   a JSONL model-output file passed through --model_output
-```
-
-## Task 1 Evaluation
+### Task 1
 
 Task 1 evaluates `pred_traverse_vector` and `pred_cost_vector`.
 
@@ -163,18 +123,7 @@ python evaluation/task1/evaluate.py \
   --filtered_dir outputs/task1_filtered
 ```
 
-Expected prediction item:
-
-```json
-{
-  "source_id": 2,
-  "success": true,
-  "pred_traverse_vector": [1, 1, 1, 1, 0, 1, 1, 0],
-  "pred_cost_vector": [2, 2, 2, 2, 0, 1, 2, 0]
-}
-```
-
-## Task 2 Evaluation
+### Task 2
 
 Task 2 evaluates `pred_traverse_vector`, `pred_cost_vector`, and `pred_region_vector`.
 
@@ -190,21 +139,9 @@ python evaluation/task2/evaluate.py \
   --filtered_dir outputs/task2_filtered
 ```
 
-Run the same command with `--dataset Level_2` and `--dataset Level_3` for the other levels.
+Run the same command with `--dataset Level_2` and `--dataset Level_3` for the other difficulty levels.
 
-Expected prediction item:
-
-```json
-{
-  "id": 1,
-  "success": true,
-  "pred_traverse_vector": [0, 0, 0, 0, 0, 1, 0, 0],
-  "pred_cost_vector": [0, 0, 0, 0, 0, 1, 0, 0],
-  "pred_region_vector": [0, 0, 0, 0, 0, 1, 0, 0]
-}
-```
-
-## Task 3 Evaluation
+### Task 3
 
 Task 3 evaluates predicted route waypoints or trajectories using traversability maps, cost maps, ground-truth paths, and semantic label masks.
 
@@ -232,7 +169,7 @@ python evaluation/task3/trajectory_evaluator.py \
   --num_workers 8
 ```
 
-Run a difficulty subset:
+Evaluate a difficulty subset:
 
 ```bash
 python evaluation/task3/trajectory_evaluator.py \
