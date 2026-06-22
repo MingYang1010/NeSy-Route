@@ -1,5 +1,11 @@
 <div align="center">
 
+<p>
+  <a href="https://eccv.ecva.net/Conferences/2026">
+    <img src="https://media.eventhosts.cc/Conferences/ECCV2026/ECCV_2026_Logo.svg" alt="ECCV 2026" width="220">
+  </a>
+</p>
+
 <h1>NeSy-Route</h1>
 
 <p><strong>A neural-symbolic benchmark for constrained route planning in remote-sensing imagery.</strong></p>
