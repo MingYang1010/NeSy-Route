@@ -2,7 +2,7 @@
 
 <p>
   <a href="https://eccv.ecva.net/Conferences/2026">
-    <img src="assets/eccv-wordmark.svg" alt="ECCV" width="180">
+    <img src="assets/eccv-2026-logo.svg" alt="ECCV 2026" width="180">
   </a>
 </p>
 
