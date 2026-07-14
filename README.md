@@ -175,7 +175,7 @@ For hosted providers, set `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and the model nam
 ```bibtex
 @inproceedings{yang2026nesyroute,
   title     = {NeSy-Route: A Neuro-Symbolic Benchmark for Constrained Route Planning in Remote Sensing},
-  author    = {Yang, Ming and Zhou, Zhi and Tian, Shiyu and Yu, Kunyang and Guo, Lan-Zhe and Li, Yu-Feng},
+  author    = {Yang, Ming and Zhou, Zhi and Tian, Shi-Yu and Yu, Kun-Yang and Guo, Lan-Zhe and Li, Yu-Feng},
   booktitle = {European Conference on Computer Vision},
   year      = {2026}
 }
