@@ -1,702 +1,358 @@
-"""Trajectory evaluation utilities for NeSy-Route Task 3."""
+"""Core metrics for NeSy-Route Task 3."""
 
+from __future__ import annotations
 
-import json
-import os
-from multiprocessing import Pool, cpu_count
-from typing import Dict, List, Optional
+import heapq
+import io
+import math
+from pathlib import Path
+from typing import Any
 
 import numpy as np
+import pyarrow.parquet as pq
 from PIL import Image
-from skimage.graph import route_through_array
-from tqdm import tqdm
 
 
-
-CLASS_NAMES = {
-    0: "Empty",
-    1: "Bareland",
-    2: "Rangeland",
-    3: "Developed space",
-    4: "Road",
-    5: "Tree",
-    6: "Water",
-    7: "Agriculture land",
-    8: "Building",
-}
+IMPASSABLE_COST = np.uint16(65535)
 
 
+def prediction_sample_id(row: dict[str, Any]) -> str | None:
+    value = row.get("sample_id", row.get("id"))
+    return str(value) if value is not None else None
 
-def bresenham_line(x0: int, y0: int, x1: int, y1: int) -> List[List[int]]:
-    points = []
-    dx = abs(x1 - x0)
-    dy = abs(y1 - y0)
-    sx = 1 if x0 < x1 else -1
-    sy = 1 if y0 < y1 else -1
-    err = dx - dy
 
+def prediction_waypoints(row: dict[str, Any]) -> list[list[int]]:
+    raw = row.get("trajectory", row.get("pred_trajectory", []))
+    if not isinstance(raw, list):
+        raise ValueError("trajectory must be a list of [x, y] coordinates")
+    waypoints: list[list[int]] = []
+    for point in raw:
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError(f"Invalid waypoint: {point!r}")
+        x, y = point
+        if not isinstance(x, (int, np.integer)) or not isinstance(y, (int, np.integer)):
+            raise ValueError(f"Waypoint coordinates must be integers: {point!r}")
+        waypoints.append([int(x), int(y)])
+    if not waypoints:
+        raise ValueError("trajectory is empty")
+    return waypoints
+
+
+def build_maps(
+    labels: np.ndarray,
+    traverse_vector: list[int],
+    cost_vector: list[int],
+) -> tuple[np.ndarray, np.ndarray]:
+    if labels.ndim != 2:
+        raise ValueError(f"Expected a 2D semantic label mask, got {labels.shape}")
+    if len(traverse_vector) != 8 or len(cost_vector) != 8:
+        raise ValueError("Task 3 traverse_vector and cost_vector must both have length 8")
+
+    traverse_map = np.zeros(labels.shape, dtype=np.uint8)
+    cost_map = np.full(labels.shape, IMPASSABLE_COST, dtype=np.uint16)
+    max_priority = max(cost_vector)
+    for class_id in range(1, 9):
+        vector_index = class_id - 1
+        if traverse_vector[vector_index] != 1:
+            continue
+        class_mask = labels == class_id
+        traverse_map[class_mask] = 1
+        cost_map[class_mask] = max_priority - cost_vector[vector_index] + 1
+    return traverse_map, cost_map
+
+
+def bresenham_line(x0: int, y0: int, x1: int, y1: int) -> list[list[int]]:
+    points: list[list[int]] = []
+    dx, dy = abs(x1 - x0), abs(y1 - y0)
+    sx, sy = (1 if x0 < x1 else -1), (1 if y0 < y1 else -1)
+    error = dx - dy
     x, y = x0, y0
     while True:
         points.append([x, y])
         if x == x1 and y == y1:
-            break
-        e2 = 2 * err
-        if e2 > -dy:
-            err -= dy
+            return points
+        doubled = 2 * error
+        if doubled > -dy:
+            error -= dy
             x += sx
-        if e2 < dx:
-            err += dx
+        if doubled < dx:
+            error += dx
             y += sy
 
-    return points
+
+def connect_with_bresenham(waypoints: list[list[int]]) -> list[list[int]]:
+    if len(waypoints) == 1:
+        return waypoints.copy()
+    trajectory: list[list[int]] = []
+    for index, (start, end) in enumerate(zip(waypoints, waypoints[1:])):
+        segment = bresenham_line(*start, *end)
+        trajectory.extend(segment if index == 0 else segment[1:])
+    return trajectory
 
 
-def connect_with_bresenham(waypoints: List[List[int]]) -> List[List[int]]:
-    if len(waypoints) < 2:
-        return waypoints
-
-    full_trajectory = []
-
-    for i in range(len(waypoints) - 1):
-        x0, y0 = waypoints[i]
-        x1, y1 = waypoints[i + 1]
-        segment = bresenham_line(x0, y0, x1, y1)
+def _heuristic(point: tuple[int, int], goal: tuple[int, int], min_cost: float) -> float:
+    return min_cost * math.hypot(point[0] - goal[0], point[1] - goal[1]) / math.sqrt(2.0)
 
 
-        if i > 0 and len(full_trajectory) > 0:
-            segment = segment[1:]
+def astar_segment(
+    start: list[int],
+    goal: list[int],
+    cost_map: np.ndarray,
+    min_cost: float | None = None,
+) -> list[list[int]]:
+    start_point, goal_point = tuple(start), tuple(goal)
+    if start_point == goal_point:
+        return [start.copy()]
 
-        full_trajectory.extend(segment)
-
-    return full_trajectory
-
-
-def connect_with_astar(waypoints: List[List[int]],
-                       cost_map: np.ndarray,
-                       _traverse_map: np.ndarray) -> List[List[int]]:
-    full_trajectory = []
-
-    for i in range(len(waypoints) - 1):
-        start = waypoints[i]
-        goal = waypoints[i + 1]
-
-
-        try:
-            indices, _ = route_through_array(
-                cost_map,
-                start=(start[1], start[0]),
-                end=(goal[1], goal[0]),
-                fully_connected=True,
-                geometric=True
-            )
-
-
-            segment = [[col, row] for row, col in indices]
-
-
-            if i > 0 and len(full_trajectory) > 0:
-                segment = segment[1:]
-
-            full_trajectory.extend(segment)
-
-        except Exception as e:
-            raise RuntimeError(f"A* failed between {start} and {goal}: {str(e)}")
-
-    return full_trajectory
-
-
-
-
-def check_all_waypoints_feasible(waypoints: List[List[int]],
-                                 traverse_map: np.ndarray,
-                                 labels: np.ndarray) -> Dict:
-    height, width = traverse_map.shape
-    infeasible = []
-
-    for i, (x, y) in enumerate(waypoints):
-
-        if not (0 <= x < width and 0 <= y < height):
-            infeasible.append({
-                'index': i,
-                'point': [int(x), int(y)],
-                'reason': 'out_of_bounds'
-            })
-            continue
-
-
-        label = labels[y, x]
-        if label == 0:
-            infeasible.append({
-                'index': i,
-                'point': [int(x), int(y)],
-                'reason': 'empty_region',
-                'label': int(label)
-            })
-            continue
-
-
-        if traverse_map[y, x] == 0:
-            infeasible.append({
-                'index': i,
-                'point': [int(x), int(y)],
-                'reason': 'non_traversable',
-                'label': int(label)
-            })
-            continue
-
-    return {
-        'all_feasible': len(infeasible) == 0,
-        'infeasible_points': infeasible
-    }
-
-
-
-
-def compute_path_cost(trajectory: List[List[int]], cost_map: np.ndarray) -> float:
-    total_cost = 0.0
     height, width = cost_map.shape
+    for x, y in (start_point, goal_point):
+        if not (0 <= x < width and 0 <= y < height):
+            raise ValueError(f"A* endpoint is out of bounds: {[x, y]}")
+        if cost_map[y, x] >= IMPASSABLE_COST:
+            raise ValueError(f"A* endpoint is non-traversable: {[x, y]}")
 
+    if min_cost is None:
+        passable = cost_map[cost_map < IMPASSABLE_COST]
+        min_cost = float(passable.min())
+    queue: list[tuple[float, int, tuple[int, int]]] = [(0.0, 0, start_point)]
+    counter = 1
+    came_from: dict[tuple[int, int], tuple[int, int]] = {}
+    g_score = {start_point: 0.0}
+    closed: set[tuple[int, int]] = set()
+
+    while queue:
+        _, _, current = heapq.heappop(queue)
+        if current == goal_point:
+            path = [current]
+            while current in came_from:
+                current = came_from[current]
+                path.append(current)
+            path.reverse()
+            return [[x, y] for x, y in path]
+        if current in closed:
+            continue
+        closed.add(current)
+
+        x, y = current
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                neighbor = (x + dx, y + dy)
+                nx, ny = neighbor
+                if not (0 <= nx < width and 0 <= ny < height):
+                    continue
+                terrain_cost = cost_map[ny, nx]
+                if terrain_cost >= IMPASSABLE_COST:
+                    continue
+                tentative = g_score[current] + float(terrain_cost)
+                if tentative >= g_score.get(neighbor, float("inf")):
+                    continue
+                came_from[neighbor] = current
+                g_score[neighbor] = tentative
+                score = tentative + _heuristic(neighbor, goal_point, min_cost)
+                heapq.heappush(queue, (score, counter, neighbor))
+                counter += 1
+    raise RuntimeError(f"No traversable path between {start} and {goal}")
+
+
+def connect_with_astar(waypoints: list[list[int]], cost_map: np.ndarray) -> list[list[int]]:
+    if len(waypoints) == 1:
+        return waypoints.copy()
+    passable = cost_map[cost_map < IMPASSABLE_COST]
+    min_cost = float(passable.min())
+    trajectory: list[list[int]] = []
+    for index, (start, end) in enumerate(zip(waypoints, waypoints[1:])):
+        segment = astar_segment(start, end, cost_map, min_cost)
+        trajectory.extend(segment if index == 0 else segment[1:])
+    return trajectory
+
+
+def waypoint_feasibility(
+    waypoints: list[list[int]],
+    traverse_map: np.ndarray,
+    labels: np.ndarray,
+) -> tuple[bool, list[dict[str, Any]]]:
+    height, width = traverse_map.shape
+    failures = []
+    for index, (x, y) in enumerate(waypoints):
+        if not (0 <= x < width and 0 <= y < height):
+            failures.append({"index": index, "point": [x, y], "reason": "out_of_bounds"})
+        elif labels[y, x] == 0:
+            failures.append({"index": index, "point": [x, y], "reason": "empty"})
+        elif traverse_map[y, x] == 0:
+            failures.append(
+                {
+                    "index": index,
+                    "point": [x, y],
+                    "reason": "non_traversable",
+                    "label": int(labels[y, x]),
+                }
+            )
+    return not failures, failures
+
+
+def path_cost(trajectory: list[list[int]], cost_map: np.ndarray) -> float:
+    height, width = cost_map.shape
+    total = 0.0
     for x, y in trajectory:
         if 0 <= x < width and 0 <= y < height:
-            cost = cost_map[y, x]
-
-            total_cost += float(cost)
+            total += float(cost_map[y, x])
         else:
-            total_cost += 65535.0
-
-    return total_cost
-
-
-def compute_euclidean_length(trajectory: List[List[int]]) -> float:
-    if len(trajectory) < 2:
-        return 0.0
-
-    length = 0.0
-    for i in range(len(trajectory) - 1):
-        x1, y1 = trajectory[i]
-        x2, y2 = trajectory[i + 1]
-        length += np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-
-    return length
+            total += float(IMPASSABLE_COST)
+    return total
 
 
-def compute_straight_distance(trajectory: List[List[int]]) -> float:
-    if len(trajectory) < 2:
-        return 0.0
-
-    x1, y1 = trajectory[0]
-    x2, y2 = trajectory[-1]
-    return np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-
-
-def euclidean_distance(p1: Optional[List[int]], p2: Optional[List[int]]) -> Optional[float]:
-    if p1 is None or p2 is None:
-        return None
-    return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
-
-
-
-
-def evaluate_optimality(trajectory: List[List[int]],
-                       gt_path: np.ndarray,
-                       cost_map: np.ndarray) -> Dict:
-
-    pred_cost = compute_path_cost(trajectory, cost_map)
-    gt_cost = compute_path_cost(gt_path.tolist(), cost_map)
-
-
-    pred_length = len(trajectory)
-    gt_length = len(gt_path)
-
-
-    pred_euclidean = compute_euclidean_length(trajectory)
-    gt_euclidean = compute_euclidean_length(gt_path.tolist())
-
-
-    straight_dist = compute_straight_distance(trajectory)
-
-    return {
-        'total_cost': float(pred_cost),
-        'gt_cost': float(gt_cost),
-        'cost_ratio': float(pred_cost / gt_cost if gt_cost > 0 else float('inf')),
-        'path_length': int(pred_length),
-        'gt_length': int(gt_length),
-        'length_ratio': float(pred_length / gt_length if gt_length > 0 else float('inf')),
-        'euclidean_length': float(pred_euclidean),
-        'gt_euclidean_length': float(gt_euclidean),
-        'straight_distance': float(straight_dist),
-        'euclidean_efficiency': float(straight_dist / pred_euclidean if pred_euclidean > 0 else 0),
-    }
-
-
-def evaluate_constraint_violations(trajectory: List[List[int]],
-                                   traverse_map: np.ndarray,
-                                   labels: np.ndarray,
-                                   cost_map: np.ndarray) -> Dict:
+def violation_ratio(trajectory: list[list[int]], traverse_map: np.ndarray) -> float:
+    if not trajectory:
+        return 1.0
     height, width = traverse_map.shape
+    violations = 0
+    for x, y in trajectory:
+        if not (0 <= x < width and 0 <= y < height) or traverse_map[y, x] == 0:
+            violations += 1
+    return violations / len(trajectory)
 
-    violations = []
-    empty_violations = 0
-    non_traversable = 0
-    out_of_bounds = 0
 
-    for i, (x, y) in enumerate(trajectory):
+def euclidean_distance(first: list[int], second: list[int]) -> float:
+    return float(math.hypot(first[0] - second[0], first[1] - second[1]))
 
-        if not (0 <= x < width and 0 <= y < height):
-            violations.append({'index': i, 'point': [int(x), int(y)], 'type': 'out_of_bounds'})
-            out_of_bounds += 1
+
+def _directed_mean_min_distance(first: np.ndarray, second: np.ndarray) -> float:
+    total = 0.0
+    chunk_size = 512
+    for start in range(0, len(first), chunk_size):
+        chunk = first[start : start + chunk_size]
+        squared = ((chunk[:, None, :] - second[None, :, :]) ** 2).sum(axis=-1)
+        total += float(np.sqrt(squared.min(axis=1)).sum())
+    return total / len(first)
+
+
+def chamfer_distance(trajectory: list[list[int]], gt_trajectory: list[list[int]]) -> float:
+    if not trajectory or not gt_trajectory:
+        return float("inf")
+    predicted = np.asarray(trajectory, dtype=np.float32)
+    ground_truth = np.asarray(gt_trajectory, dtype=np.float32)
+    return (
+        _directed_mean_min_distance(predicted, ground_truth)
+        + _directed_mean_min_distance(ground_truth, predicted)
+    ) / 2.0
+
+
+def label_cache_name(source_image_name: str) -> str:
+    return f"{Path(source_image_name).stem}.png"
+
+
+def materialize_label_cache(label_parquet: Path, cache_dir: Path) -> int:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    table = pq.read_table(label_parquet, columns=["source_image_name", "label"])
+    written = 0
+    for row in table.to_pylist():
+        target = cache_dir / label_cache_name(row["source_image_name"])
+        if target.is_file():
             continue
+        payload = row["label"]["bytes"]
+        if payload is None:
+            raise ValueError(f"Missing label bytes for {row['source_image_name']}")
+        temporary = target.with_suffix(".png.incomplete")
+        temporary.write_bytes(payload)
+        with Image.open(io.BytesIO(payload)) as image:
+            if image.size != (row.get("width", image.width), row.get("height", image.height)):
+                raise ValueError(f"Invalid label dimensions for {row['source_image_name']}")
+        temporary.replace(target)
+        written += 1
+    return written
 
 
-        label = labels[y, x]
-        if label == 0:
-            violations.append({'index': i, 'point': [int(x), int(y)], 'type': 'empty', 'label': int(label)})
-            empty_violations += 1
-            continue
-
-
-        if traverse_map[y, x] == 0:
-            violations.append({'index': i, 'point': [int(x), int(y)], 'type': 'non_traversable', 'label': int(label)})
-            non_traversable += 1
-
-    return {
-        'violation_count': len(violations),
-        'violation_ratio': float(len(violations) / len(trajectory) if len(trajectory) > 0 else 0),
-        'empty_violation_count': empty_violations,
-        'non_traversable_count': non_traversable,
-        'out_of_bounds_count': out_of_bounds,
-        'violation_details': violations[:100],
-    }
-
-
-def evaluate_common_metrics(trajectory: List[List[int]],
-                           gt_path: np.ndarray,
-                           waypoints: List[List[int]],
-                           dataset_sample: Dict) -> Dict:
-    start_gt = dataset_sample['start_end_pairs'][0]['start_point']
-    end_gt = dataset_sample['start_end_pairs'][0]['end_point']
-
-    start_pred = waypoints[0] if len(waypoints) > 0 else None
-    end_pred = waypoints[-1] if len(waypoints) > 0 else None
-
-    return {
-        'start_error': euclidean_distance(start_pred, start_gt),
-        'end_error': euclidean_distance(end_pred, end_gt),
-    }
-
-
-
-
-
-
-def evaluate_chamfer_distance(trajectory: List[List[int]],
-                              gt_path: np.ndarray) -> Dict:
-    if len(trajectory) < 2 or len(gt_path) < 2:
-        return {
-            'chamfer_distance': float('inf'),
-            'mean_min_distance_pred_to_gt': float('inf'),
-            'mean_min_distance_gt_to_pred': float('inf'),
-        }
-
-    pred = np.array(trajectory, dtype=np.float32)
-    gt = np.array(gt_path, dtype=np.float32)
-
-
-    def min_distances(A, B):
-        dist_matrix = np.sqrt(((A[:, None, :] - B[None, :, :]) ** 2).sum(axis=-1))
-        return np.min(dist_matrix, axis=1)
-
-    min_dists_p2g = min_distances(pred, gt)
-    min_dists_g2p = min_distances(gt, pred)
-
-    chamfer = (np.mean(min_dists_p2g) + np.mean(min_dists_g2p)) / 2
-
-    return {
-        'chamfer_distance': float(chamfer),
-        'mean_min_distance_pred_to_gt': float(np.mean(min_dists_p2g)),
-        'mean_min_distance_gt_to_pred': float(np.mean(min_dists_g2p)),
-    }
-
-def evaluate_single_trajectory(model_output: Dict,
-                               dataset_sample: Dict,
-                               cost_map: np.ndarray,
-                               traverse_map: np.ndarray,
-                               gt_path: np.ndarray,
-                               labels: np.ndarray) -> Dict:
-    waypoints = model_output.get('trajectory', [])
-    sample_id = model_output['id']
-
-    result = {
-        'id': sample_id,
-        'num_waypoints': len(waypoints),
-    }
-
-
-    if len(waypoints) == 0:
-        result['error'] = 'empty_trajectory'
-        return result
-
-
-    feasibility_check = check_all_waypoints_feasible(waypoints, traverse_map, labels)
-
-    result['all_waypoints_feasible'] = feasibility_check['all_feasible']
-    result['infeasible_waypoints'] = feasibility_check['infeasible_points']
-    result['infeasible_count'] = len(feasibility_check['infeasible_points'])
-
-
-    if result['all_waypoints_feasible']:
-
-        result['connection_method'] = 'astar'
-
-        try:
-            full_trajectory = connect_with_astar(waypoints, cost_map, traverse_map)
-            result['connection_success'] = True
-
-
-            optimality_metrics = evaluate_optimality(full_trajectory, gt_path, cost_map)
-            result.update(optimality_metrics)
-
-        except Exception as e:
-            result['connection_success'] = False
-            result['connection_error'] = str(e)
-
-            full_trajectory = connect_with_bresenham(waypoints)
-            result['fallback_to_bresenham'] = True
-
-
-            violation_metrics = evaluate_constraint_violations(
-                full_trajectory, traverse_map, labels, cost_map
-            )
-            result.update(violation_metrics)
-
-    else:
-
-        result['connection_method'] = 'bresenham'
-        full_trajectory = connect_with_bresenham(waypoints)
-        result['connection_success'] = True
-
-
-        violation_metrics = evaluate_constraint_violations(
-            full_trajectory, traverse_map, labels, cost_map
+def evaluate_sample(
+    prediction: dict[str, Any],
+    sample: dict[str, Any],
+    label_cache_dir: str,
+) -> dict[str, Any]:
+    sample_id = sample["sample_id"]
+    result: dict[str, Any] = {"sample_id": sample_id, "query_id": sample["query_id"]}
+    try:
+        waypoints = prediction_waypoints(prediction)
+        label_path = Path(label_cache_dir) / label_cache_name(sample["source_image_name"])
+        with Image.open(label_path) as image:
+            labels = np.asarray(image)
+        traverse_map, cost_map = build_maps(
+            labels,
+            sample["traverse_vector"],
+            sample["cost_vector"],
         )
-        result.update(violation_metrics)
+        adherent, failures = waypoint_feasibility(waypoints, traverse_map, labels)
+        result.update(
+            {
+                "num_waypoints": len(waypoints),
+                "adherent": adherent,
+                "infeasible_waypoints": failures[:100],
+                "start_error": euclidean_distance(waypoints[0], sample["start_point"]),
+                "end_error": euclidean_distance(waypoints[-1], sample["end_point"]),
+            }
+        )
 
+        if adherent:
+            try:
+                dense_trajectory = connect_with_astar(waypoints, cost_map)
+                gt_cost = path_cost(sample["gt_trajectory"], cost_map)
+                result["connection_method"] = "astar"
+                result["connection_success"] = True
+                result["cost_ratio"] = path_cost(dense_trajectory, cost_map) / gt_cost
+            except Exception as error:
+                dense_trajectory = connect_with_bresenham(waypoints)
+                result["connection_method"] = "bresenham_fallback"
+                result["connection_success"] = False
+                result["connection_error"] = str(error)
+        else:
+            dense_trajectory = connect_with_bresenham(waypoints)
+            result["connection_method"] = "bresenham"
+            result["connection_success"] = True
+            result["violation_ratio"] = violation_ratio(dense_trajectory, traverse_map)
 
-    common_metrics = evaluate_common_metrics(
-        full_trajectory, gt_path, waypoints, dataset_sample
-    )
-    result.update(common_metrics)
-
-
-
-    chamfer_metrics = evaluate_chamfer_distance(full_trajectory, gt_path)
-    result.update(chamfer_metrics)
-
+        result["dense_path_length"] = len(dense_trajectory)
+        result["gt_path_length"] = len(sample["gt_trajectory"])
+        result["chamfer_distance"] = chamfer_distance(
+            dense_trajectory,
+            sample["gt_trajectory"],
+        )
+    except Exception as error:
+        result["error"] = str(error)
     return result
 
 
-
-
-def process_single_sample(args):
-    model_output, dataset_sample, dataset_root, dataset_name, labels_root = args
-    sample_id = model_output['id']
-
-    try:
-
-        image_name = dataset_sample['image_name'].replace('.tif', '')
-
-
-        cost_map_path = os.path.join(dataset_root, dataset_name, 'cost_map_npy', f'{sample_id}.npy')
-        cost_map = np.load(cost_map_path)
-
-
-        traverse_map_path = os.path.join(dataset_root, dataset_name, 'traverse_map_npy', f'{sample_id}.npy')
-        traverse_map = np.load(traverse_map_path)
-
-
-        gt_path_path = os.path.join(dataset_root, dataset_name, 'gt', f'{sample_id}.npy')
-        gt_path = np.load(gt_path_path)
-
-
-        labels_path = os.path.join(labels_root, f'{image_name}.tif')
-        labels = np.array(Image.open(labels_path))
-
-
-        result = evaluate_single_trajectory(
-            model_output, dataset_sample, cost_map, traverse_map, gt_path, labels
-        )
-        return result
-
-    except Exception as e:
-        return {
-            'id': sample_id,
-            'error': f'processing_failed: {str(e)}'
-        }
-
-
-
-
-def load_jsonl(file_path: str) -> List[Dict]:
-    data = []
-    with open(file_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                data.append(json.loads(line))
-    return data
-
-
-def save_jsonl(data: List[Dict], file_path: str):
-
-    dir_path = os.path.dirname(file_path)
-
-
-    if dir_path:
-        os.makedirs(dir_path, exist_ok=True)
-
-
-    with open(file_path, 'w', encoding='utf-8') as f:
-        for item in data:
-            f.write(json.dumps(item, ensure_ascii=False) + '\n')
-
-
-def batch_evaluate(dataset_path: str,
-                  model_output_path: str,
-                  dataset_root: str,
-                  labels_root: str,
-                  output_dir: str,
-                  subset_jsonl: Optional[str] = None,
-                  num_workers: int = None):
-    if num_workers is None:
-        num_workers = cpu_count()
-
-
-    model_output_basename = os.path.basename(model_output_path).replace('.jsonl', '')
-    if subset_jsonl and os.path.exists(subset_jsonl):
-        subset_name = os.path.basename(subset_jsonl).replace('.jsonl', '')
-        output_filename = f"{model_output_basename}_{subset_name}_eval.jsonl"
-    else:
-        output_filename = f"{model_output_basename}_eval.jsonl"
-    output_path = os.path.join(output_dir, output_filename)
-
-    print(f"Running parallel evaluation with {num_workers} workers.")
-    print(f"Loading dataset: {dataset_path}")
-    dataset = load_jsonl(dataset_path)
-
-    print(f"Loading model outputs: {model_output_path}")
-    model_outputs = load_jsonl(model_output_path)
-
-
-    dataset_dict = {sample['id']: sample for sample in dataset}
-
-
-    desired_ids = None
-    if subset_jsonl:
-        print(f"Using subset file: {subset_jsonl}")
-        subset_data = load_jsonl(subset_jsonl)
-        desired_ids = {item['id'] for item in subset_data if 'id' in item}
-        print(f"Subset sample IDs: {len(desired_ids)}")
-
-
-    dataset_name = os.path.basename(dataset_path).replace('.jsonl', '')
-
-    print(f"Dataset name: {dataset_name}")
-    print(f"Output file: {output_path}")
-
-
-    process_args = []
-    for model_output in model_outputs:
-        sample_id = model_output['id']
-
-        if sample_id not in dataset_dict:
-            continue
-
-
-        if desired_ids is not None and sample_id not in desired_ids:
-            continue
-
-        dataset_sample = dataset_dict[sample_id]
-        process_args.append((
-            model_output,
-            dataset_sample,
-            dataset_root,
-            dataset_name,
-            labels_root
-        ))
-
-    print(f"Evaluating {len(process_args)} samples...")
-
-
-    with Pool(processes=num_workers) as pool:
-        results = list(tqdm(
-            pool.imap(process_single_sample, process_args),
-            total=len(process_args),
-            desc="Evaluation",
-            unit="sample"
-        ))
-
-    save_jsonl(results, output_path)
-    print(f"\nEvaluation finished. Results saved to: {output_path}")
-
-
-    errors = [r for r in results if 'error' in r]
-    if errors:
-        print(f"\nFound {len(errors)} failed samples.")
-
-    print_statistics(results)
-    return results
-
-
-def print_statistics(results: List[Dict]):
-    total = len(results)
-
-
-    errors = [r for r in results if 'error' in r]
-    valid = [r for r in results if 'error' not in r]
-
-
-    astar_used = [r for r in valid if r.get('connection_method') == 'astar']
-    bresenham_used = [r for r in valid if r.get('connection_method') == 'bresenham']
-
-
-    all_feasible = [r for r in valid if r.get('all_waypoints_feasible')]
-
-    print("\n" + "="*60)
-    print("Evaluation statistics")
-    print("="*60)
-    print(f"Total samples: {total}")
-    print(f"Failed samples: {len(errors)}")
-    print(f"Valid samples: {len(valid)}")
-
-    if not valid:
-        print("="*60)
-        return
-
-    print("\nConnection methods:")
-    print(f"  - A*: {len(astar_used)} ({len(astar_used)/len(valid)*100:.1f}%)")
-    print(f"  - Bresenham: {len(bresenham_used)} ({len(bresenham_used)/len(valid)*100:.1f}%)")
-    print("\nWaypoint feasibility:")
-    print(f"  - All feasible: {len(all_feasible)} ({len(all_feasible)/len(valid)*100:.1f}%)")
-    print(f"  - Any violation: {len(valid) - len(all_feasible)} ({(len(valid)-len(all_feasible))/len(valid)*100:.1f}%)")
-
-
-    if astar_used:
-        cost_ratios = [r['cost_ratio'] for r in astar_used if r.get('connection_success') and 'cost_ratio' in r]
-        if cost_ratios:
-            print("\nOptimality metrics for A* samples:")
-            print(f"  - Mean cost ratio (pred/gt): {np.mean(cost_ratios):.3f}")
-            print(f"  - Median cost ratio: {np.median(cost_ratios):.3f}")
-            print(f"  - Min cost ratio: {np.min(cost_ratios):.3f}")
-            print(f"  - Max cost ratio: {np.max(cost_ratios):.3f}")
-
-
-    if bresenham_used:
-        violation_ratios = [r['violation_ratio'] for r in bresenham_used if 'violation_ratio' in r]
-        if violation_ratios:
-            print("\nConstraint-violation metrics for Bresenham samples:")
-            print(f"  - Mean violation ratio: {np.mean(violation_ratios):.3f}")
-            print(f"  - Median violation ratio: {np.median(violation_ratios):.3f}")
-
-    print("="*60)
-
-    if valid:
-        chamfer_vals = [r.get('chamfer_distance', float('inf')) for r in valid]
-        valid_chamfer = [v for v in chamfer_vals if np.isfinite(v)]
-
-        if valid_chamfer:
-            print("\nTrajectory similarity metrics (Chamfer distance):")
-            print(f"  - Mean Chamfer distance: {np.mean(valid_chamfer):.2f} pixels")
-            print(f"  - Median Chamfer distance: {np.median(valid_chamfer):.2f} pixels")
-            print(f"  - Min Chamfer distance: {np.min(valid_chamfer):.2f} pixels")
-
-def check_data_paths(dataset_path: str,
-                     model_output_path: str,
-                     dataset_root: str,
-                     labels_root: str):
-    print("="*60)
-    print("Path check")
-    print("="*60)
-
-
-    print(f"\n1. Dataset file: {dataset_path}")
-    if os.path.exists(dataset_path):
-        print("   OK")
-        dataset = load_jsonl(dataset_path)
-        print(f"   Samples: {len(dataset)}")
-        if dataset:
-            sample = dataset[0]
-            print(f"   First sample ID: {sample['id']}")
-            print(f"   image_name: {sample['image_name']}")
-    else:
-        print("   MISSING")
-        return False
-
-
-    print(f"\n2. Model output file: {model_output_path}")
-    if os.path.exists(model_output_path):
-        print("   OK")
-        outputs = load_jsonl(model_output_path)
-        print(f"   Outputs: {len(outputs)}")
-        if outputs:
-            print(f"   First output ID: {outputs[0]['id']}")
-    else:
-        print("   MISSING")
-        return False
-
-
-    dataset_name = os.path.basename(dataset_path).replace('.jsonl', '')
-    print(f"\n3. Dataset root: {dataset_root}")
-    print(f"   Dataset name: {dataset_name}")
-
-    required_folders = ['cost_map_npy', 'traverse_map_npy', 'gt', 'samples']
-    dataset_folder = os.path.join(dataset_root, dataset_name)
-
-    print(f"   Dataset folder: {dataset_folder}")
-    if not os.path.exists(dataset_folder):
-        print("   MISSING dataset folder")
-        return False
-
-    for folder in required_folders:
-        folder_path = os.path.join(dataset_folder, folder)
-        if os.path.exists(folder_path):
-            files = os.listdir(folder_path)
-            print(f"   OK {folder}: {len(files)} files")
-        else:
-            print(f"   MISSING {folder}")
-
-
-    print(f"\n4. Label mask root: {labels_root}")
-    if os.path.exists(labels_root):
-        label_files = [f for f in os.listdir(labels_root) if f.endswith('.tif')]
-        print(f"   OK, {len(label_files)} .tif files")
-        if label_files:
-            print(f"   Example: {label_files[0]}")
-    else:
-        print("   MISSING")
-        return False
-
-
-    if dataset and outputs:
-        sample_id = outputs[0]['id']
-        if sample_id in {s['id'] for s in dataset}:
-            sample = [s for s in dataset if s['id'] == sample_id][0]
-            image_name = sample['image_name'].replace('.tif', '')
-
-            print(f"\n5. Files for sample {sample_id}:")
-
-            files_to_check = {
-                'cost_map': os.path.join(dataset_folder, 'cost_map_npy', f'{sample_id}.npy'),
-                'traverse_map': os.path.join(dataset_folder, 'traverse_map_npy', f'{sample_id}.npy'),
-                'gt': os.path.join(dataset_folder, 'gt', f'{sample_id}.npy'),
-                'sample': os.path.join(dataset_folder, 'samples', f'{sample_id}.tif'),
-                'label': os.path.join(labels_root, f'{image_name}.tif'),
-            }
-
-            for name, path in files_to_check.items():
-                if os.path.exists(path):
-                    print(f"   OK {name}: {path}")
-                else:
-                    print(f"   MISSING {name}: {path}")
-
-    print("="*60)
-    return True
+def aggregate_metrics(results: list[dict[str, Any]], ground_truth_count: int) -> dict[str, Any]:
+    if not results:
+        raise ValueError("No matched Task 3 predictions were evaluated")
+    successful_results = [row for row in results if "error" not in row]
+    cost_ratios = [
+        row["cost_ratio"]
+        for row in successful_results
+        if row.get("adherent") and "cost_ratio" in row
+    ]
+    violation_ratios = [
+        row["violation_ratio"]
+        for row in successful_results
+        if not row.get("adherent") and "violation_ratio" in row
+    ]
+    chamfer_values = [
+        row["chamfer_distance"]
+        for row in successful_results
+        if math.isfinite(row.get("chamfer_distance", float("inf")))
+    ]
+    return {
+        "paper_metrics": {
+            "AR": sum(bool(row.get("adherent")) for row in results) / len(results),
+            "CR": float(np.mean(cost_ratios)) if cost_ratios else None,
+            "VR": float(np.mean(violation_ratios)) if violation_ratios else None,
+            "CD": float(np.mean(chamfer_values)) if chamfer_values else None,
+        },
+        "stats": {
+            "ground_truth_samples": ground_truth_count,
+            "matched_predictions": len(results),
+            "successful_evaluations": len(successful_results),
+            "failed_evaluations": len(results) - len(successful_results),
+            "adherent_with_cost_ratio": len(cost_ratios),
+            "non_adherent_with_violation_ratio": len(violation_ratios),
+        },
+    }

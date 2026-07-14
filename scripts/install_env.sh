@@ -5,6 +5,14 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_DIR="${VENV_DIR:-.venv}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+WITH_INFERENCE=false
+
+if [ "${1:-}" = "--with-inference" ]; then
+  WITH_INFERENCE=true
+elif [ "$#" -gt 0 ]; then
+  echo "Usage: bash scripts/install_env.sh [--with-inference]" >&2
+  exit 2
+fi
 
 cd "${REPO_ROOT}"
 
@@ -14,4 +22,8 @@ fi
 
 source "${VENV_DIR}/bin/activate"
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt -r requirements-inference.txt
+python -m pip install -r requirements.txt
+
+if [ "${WITH_INFERENCE}" = true ]; then
+  python -m pip install -r requirements-inference.txt
+fi

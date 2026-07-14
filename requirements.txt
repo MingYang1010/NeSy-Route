@@ -1,5 +1,8 @@
 numpy
 scipy
 pillow
+pyarrow>=14.0.0
+huggingface_hub>=0.24.0
+datasets>=3.0.0
 scikit-image
 tqdm
