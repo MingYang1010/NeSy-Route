@@ -1,8 +1,16 @@
 <div align="center">
 
+<p>
+  <a href="https://eccv.ecva.net/Conferences/2026">
+    <img src="assets/eccv-wordmark.svg" alt="ECCV" width="180">
+  </a>
+</p>
+
 <h1>NeSy-Route</h1>
 
 <p><strong>A neuro-symbolic benchmark for constrained route planning in remote-sensing imagery.</strong></p>
+
+<p><strong>🎉 NeSy-Route has been accepted to ECCV 2026!</strong></p>
 
 <p>
   <a href="https://mingyang1010.github.io/NeSy-Route/">
@@ -28,12 +36,13 @@
 
 </div>
 
-## News
+## ✨ News
 
 | Date | Update |
 | --- | --- |
-| 2026.07 | Evaluation-ready annotations and Task 3 semantic masks are released on Hugging Face. |
-| 2026.06 | The project page, paper, code, and benchmark dataset are online. |
+| 2026.07 | 🎉 **NeSy-Route has been accepted to ECCV 2026.** |
+| 2026.07 | 🚀 Evaluation-ready annotations, Task 3 semantic masks, and evaluation code are released. |
+| 2026.06 | 🌍 The project page, paper, code, and benchmark dataset are online. |
 
 ## Overview
 
