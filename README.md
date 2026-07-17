@@ -8,7 +8,7 @@
 
 <h1>NeSy-Route</h1>
 
-<p><strong>A neuro-symbolic benchmark for constrained route planning in remote-sensing imagery.</strong></p>
+<p><strong>A Neuro-Symbolic Benchmark for Constrained Route Planning in Remote Sensing</strong></p>
 
 <p><strong>🎉 NeSy-Route has been accepted to ECCV 2026!</strong></p>
 
